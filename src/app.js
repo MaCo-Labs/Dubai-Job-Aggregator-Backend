@@ -24,15 +24,20 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve frontend static files
-app.use(express.static(path.join(__dirname, '../../frontend')));
+// =============================
+// Serve frontend (EC2 build)
+// =============================
+const frontendPath = '/home/ec2-user/Dubai-Job-Aggregator-Frontend/dist';
+
+// Serve static files
+app.use(express.static(frontendPath));
 
 // API routes
 app.use('/api', jobRoutes);
 
-// Serve frontend for all non-API routes
+// Serve React app for all non-API routes
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../frontend/index.html'));
+    res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
 // Error handler
