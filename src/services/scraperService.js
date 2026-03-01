@@ -548,8 +548,8 @@ const scrapeCompany = async (company) => {
 /**
  * Scrape all companies sequentially with a delay
  */
-const scrapeAllCompanies = async () => {
-    const companies = await Company.find({});
+const scrapeAllCompanies = async (query = {}) => {
+    const companies = await Company.find(query);
     const results = [];
     const CONCURRENCY = 10; // Increased concurrency for scraping
 

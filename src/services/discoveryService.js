@@ -216,8 +216,8 @@ const discoverCompanyUrls = async (company) => {
 /**
  * Discover URLs for all companies that don't have them yet
  */
-const discoverAllCompanies = async () => {
-    const companies = await Company.find({
+const discoverAllCompanies = async (query = null) => {
+    const companies = await Company.find(query || {
         $or: [
             { websiteUrl: { $in: [null, ''] } },
             { linkedinUrl: { $in: [null, ''] } },

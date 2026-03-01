@@ -121,25 +121,51 @@ exports.discoverOne = async (req, res, next) => {
     }
 };
 
-// Start scraping all companies
+// Start scraping all companies (with smart discovery and skip logic)
 exports.scrapeAll = async (req, res, next) => {
     try {
+        const { force = false } = req.query;
         const companies = await Company.find({});
+
         if (companies.length === 0) {
             return res.status(400).json({ error: 'No companies found. Upload an XLSX file first.' });
         }
 
-        // Mark all as pending
-        await Company.updateMany({}, { scrapeStatus: 'pending' });
+        // 1. Find companies that need discovery
+        const needsDiscovery = companies.filter(c => !c.websiteUrl && !c.linkedinUrl);
+
+        // 2. Determine which companies to scrape
+        const toScrapeQuery = force === 'true'
+            ? {}
+            : { scrapeStatus: { $in: ['pending', 'failed', 'scraping'] } };
 
         res.json({
-            message: `Scraping started for ${companies.length} companies`,
+            message: `Scraping workflow started. ${needsDiscovery.length} companies need discovery first.`,
             status: 'started',
+            discoveryCount: needsDiscovery.length,
+            forceMode: force === 'true'
         });
 
-        // Run scraping in background
-        scrapeAllCompanies().catch((err) => {
-            logger.error(`Background scrape error: ${err.message}`);
+        // Run workflow in background
+        (async () => {
+            // Step A: Discovery for those missing URLs
+            if (needsDiscovery.length > 0) {
+                logger.info(`Starting auto-discovery for ${needsDiscovery.length} companies before scraping`);
+                await discoverAllCompanies({
+                    _id: { $in: needsDiscovery.map(c => c._id) }
+                });
+            }
+
+            // Step B: Mark target companies as pending if needed
+            if (force === 'true') {
+                await Company.updateMany({}, { scrapeStatus: 'pending' });
+            }
+
+            // Step C: Run scraping for the target set
+            logger.info(`Starting smart scraping...`);
+            await scrapeAllCompanies(toScrapeQuery);
+        })().catch((err) => {
+            logger.error(`Background scrape workflow error: ${err.message}`);
         });
     } catch (error) {
         next(error);
@@ -233,6 +259,16 @@ exports.getCompanies = async (req, res, next) => {
         if (tower) filter.tower = { $regex: tower, $options: 'i' };
 
         const companies = await Company.find(filter).sort({ tower: 1, name: 1 });
+
+        // Simple ETag based on length and last update
+        const lastUpdate = companies.reduce((max, c) => Math.max(max, new Date(c.updatedAt).getTime()), 0);
+        const etag = `W/"${companies.length}-${lastUpdate}"`;
+
+        if (req.header('If-None-Match') === etag) {
+            return res.status(304).end();
+        }
+
+        res.setHeader('ETag', etag);
         res.json(companies);
     } catch (error) {
         next(error);
@@ -253,48 +289,44 @@ exports.getTowers = async (req, res, next) => {
 // Get dashboard stats
 exports.getStats = async (req, res, next) => {
     try {
-        const totalCompanies = await Company.countDocuments();
-        const totalJobs = await Job.countDocuments({ isActive: true });
-        const companiesScraped = await Company.countDocuments({
-            scrapeStatus: { $in: ['completed', 'no_jobs_found'] },
-        });
-        const companiesPending = await Company.countDocuments({
-            scrapeStatus: { $in: ['pending', 'scraping'] },
-        });
-        const companiesFailed = await Company.countDocuments({ scrapeStatus: 'failed' });
+        const stats = {
+            totalCompanies: await Company.countDocuments(),
+            totalJobs: await Job.countDocuments({ isActive: true }),
+            companiesScraped: await Company.countDocuments({
+                scrapeStatus: { $in: ['completed', 'no_jobs_found'] },
+            }),
+            companiesPending: await Company.countDocuments({
+                scrapeStatus: { $in: ['pending', 'scraping'] },
+            }),
+            companiesFailed: await Company.countDocuments({ scrapeStatus: 'failed' }),
+            discoveryFound: await Company.countDocuments({ discoveryStatus: 'found' }),
+            discoveryPending: await Company.countDocuments({
+                discoveryStatus: { $in: ['pending', 'searching'] },
+            }),
+            discoveryNotFound: await Company.countDocuments({ discoveryStatus: 'not_found' }),
+        };
 
-        // Discovery stats
-        const discoveryFound = await Company.countDocuments({ discoveryStatus: 'found' });
-        const discoveryPending = await Company.countDocuments({
-            discoveryStatus: { $in: ['pending', 'searching'] },
-        });
-        const discoveryNotFound = await Company.countDocuments({ discoveryStatus: 'not_found' });
-
-        const industriesAgg = await Job.aggregate([
+        // Aggregations
+        stats.industries = await Job.aggregate([
             { $match: { isActive: true } },
             { $group: { _id: '$industry', count: { $sum: 1 } } },
             { $sort: { count: -1 } },
         ]);
 
-        // Tower stats
-        const towerAgg = await Company.aggregate([
+        stats.towers = await Company.aggregate([
             { $match: { tower: { $ne: null } } },
             { $group: { _id: '$tower', count: { $sum: 1 } } },
             { $sort: { count: -1 } },
         ]);
 
-        res.json({
-            totalCompanies,
-            totalJobs,
-            companiesScraped,
-            companiesPending,
-            companiesFailed,
-            discoveryFound,
-            discoveryPending,
-            discoveryNotFound,
-            industries: industriesAgg,
-            towers: towerAgg,
-        });
+        // ETag based on stats values
+        const etag = `W/"${JSON.stringify(stats).length}-${stats.totalJobs}-${stats.companiesScraped}"`;
+        if (req.header('If-None-Match') === etag) {
+            return res.status(304).end();
+        }
+
+        res.setHeader('ETag', etag);
+        res.json(stats);
     } catch (error) {
         next(error);
     }
