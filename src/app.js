@@ -24,15 +24,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve frontend static files
-app.use(express.static(path.join(__dirname, '../../frontend')));
-
-// API routes
+// API routes only
 app.use('/api', jobRoutes);
 
-// Serve frontend for all non-API routes
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../frontend/index.html'));
+// Health check (optional)
+app.get('/', (req, res) => {
+    res.json({ status: 'Job Aggregator API running' });
 });
 
 // Error handler
