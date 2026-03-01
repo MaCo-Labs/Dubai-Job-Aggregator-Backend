@@ -25,8 +25,9 @@ exports.uploadCompanies = async (req, res, next) => {
             try {
                 if (companyData.tower) towersSet.add(companyData.tower);
 
+                const safeName = companyData.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const existing = await Company.findOne({
-                    name: { $regex: new RegExp(`^${companyData.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+                    name: { $regex: new RegExp(`^${safeName}$`, 'i') },
                     tower: companyData.tower || null,
                 });
 
@@ -148,25 +149,29 @@ exports.scrapeAll = async (req, res, next) => {
 
         // Run workflow in background
         (async () => {
-            // Step A: Discovery for those missing URLs
-            if (needsDiscovery.length > 0) {
-                logger.info(`Starting auto-discovery for ${needsDiscovery.length} companies before scraping`);
-                await discoverAllCompanies({
-                    _id: { $in: needsDiscovery.map(c => c._id) }
-                });
-            }
+            try {
+                // Step A: Mark target companies as 'scraping' immediately for UI feedback
+                const targetIds = companiesToScrape.map(c => c._id);
+                await Company.updateMany(
+                    { _id: { $in: targetIds } },
+                    { scrapeStatus: 'scraping' }
+                );
 
-            // Step B: Mark target companies as pending if needed
-            if (force === 'true') {
-                await Company.updateMany({}, { scrapeStatus: 'pending' });
-            }
+                // Step B: Discovery for those missing URLs
+                if (needsDiscovery.length > 0) {
+                    logger.info(`Starting auto-discovery for ${needsDiscovery.length} companies before scraping`);
+                    await discoverAllCompanies({
+                        _id: { $in: needsDiscovery.map(c => c._id) }
+                    });
+                }
 
-            // Step C: Run scraping for the target set
-            logger.info(`Starting smart scraping...`);
-            await scrapeAllCompanies(toScrapeQuery);
-        })().catch((err) => {
-            logger.error(`Background scrape workflow error: ${err.message}`);
-        });
+                // Step C: Run scraping for the target set
+                logger.info(`Starting smart scraping for ${targetIds.length} companies...`);
+                await scrapeAllCompanies(toScrapeQuery);
+            } catch (err) {
+                logger.error(`Background scrape workflow error: ${err.message}`);
+            }
+        })();
     } catch (error) {
         next(error);
     }
@@ -319,8 +324,18 @@ exports.getStats = async (req, res, next) => {
             { $sort: { count: -1 } },
         ]);
 
-        // ETag based on stats values
-        const etag = `W/"${JSON.stringify(stats).length}-${stats.totalJobs}-${stats.companiesScraped}"`;
+        // Calculate a "last update" timestamp for stats
+        const lastCompanyUpdate = await Company.findOne({}).sort({ updatedAt: -1 }).select('updatedAt');
+        const lastJobUpdate = await Job.findOne({}).sort({ updatedAt: -1 }).select('updatedAt');
+
+        const lastUpdate = Math.max(
+            lastCompanyUpdate ? new Date(lastCompanyUpdate.updatedAt).getTime() : 0,
+            lastJobUpdate ? new Date(lastJobUpdate.updatedAt).getTime() : 0
+        );
+
+        // ETag based on stats values and last update
+        const etag = `W/"${JSON.stringify(stats).length}-${stats.totalJobs}-${stats.companiesScraped}-${lastUpdate}"`;
+
         if (req.header('If-None-Match') === etag) {
             return res.status(304).end();
         }

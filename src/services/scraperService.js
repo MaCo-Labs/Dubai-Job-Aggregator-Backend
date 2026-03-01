@@ -551,27 +551,27 @@ const scrapeCompany = async (company) => {
 const scrapeAllCompanies = async (query = {}) => {
     const companies = await Company.find(query);
     const results = [];
-    const CONCURRENCY = 10; // Increased concurrency for scraping
+    const CONCURRENCY = 10;
 
-    logger.info(`Starting parallel scraping for ${companies.length} companies (concurrency: ${CONCURRENCY})`);
+    logger.info(`Starting concurrent scraping for ${companies.length} companies (max: ${CONCURRENCY})`);
 
-    for (let i = 0; i < companies.length; i += CONCURRENCY) {
-        logger.info(`Scraping batch ${i / CONCURRENCY + 1} / ${Math.ceil(companies.length / CONCURRENCY)}...`);
-        const batch = companies.slice(i, i + CONCURRENCY);
-        const batchResults = await Promise.all(
-            batch.map(async (company) => {
-                try {
-                    return await scrapeCompany(company);
-                } catch (err) {
-                    logger.error(`Error in batch scrape for ${company.name}: ${err.message}`);
-                    return { company: company.name, status: 'error', error: err.message };
-                }
-            })
-        );
-        results.push(...batchResults);
-    }
+    let index = 0;
+    const workers = Array(Math.min(CONCURRENCY, companies.length)).fill(null).map(async () => {
+        while (index < companies.length) {
+            const company = companies[index++];
+            try {
+                const res = await scrapeCompany(company);
+                results.push(res);
+            } catch (err) {
+                logger.error(`Error scraping ${company.name}: ${err.message}`);
+                results.push({ company: company.name, status: 'error', error: err.message });
+            }
+        }
+    });
 
-    // Close browser after all scraping is done (optional, but good for resources)
+    await Promise.all(workers);
+
+    // Close browser after all scraping is done
     if (sharedBrowser) {
         await sharedBrowser.close();
         sharedBrowser = null;
