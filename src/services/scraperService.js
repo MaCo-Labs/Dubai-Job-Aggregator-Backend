@@ -546,30 +546,24 @@ const scrapeCompany = async (company) => {
 };
 
 /**
- * Scrape all companies sequentially with a delay
+ * Scrape all companies one by one (sequential)
  */
 const scrapeAllCompanies = async (query = {}) => {
     const companies = await Company.find(query);
     const results = [];
-    const CONCURRENCY = 10;
 
-    logger.info(`Starting concurrent scraping for ${companies.length} companies (max: ${CONCURRENCY})`);
+    logger.info(`Starting sequential scraping for ${companies.length} companies (one by one)`);
 
-    let index = 0;
-    const workers = Array(Math.min(CONCURRENCY, companies.length)).fill(null).map(async () => {
-        while (index < companies.length) {
-            const company = companies[index++];
-            try {
-                const res = await scrapeCompany(company);
-                results.push(res);
-            } catch (err) {
-                logger.error(`Error scraping ${company.name}: ${err.message}`);
-                results.push({ company: company.name, status: 'error', error: err.message });
-            }
+    for (const company of companies) {
+        try {
+            logger.info(`[${results.length + 1}/${companies.length}] Scraping: ${company.name}`);
+            const res = await scrapeCompany(company);
+            results.push(res);
+        } catch (err) {
+            logger.error(`Error scraping ${company.name}: ${err.message}`);
+            results.push({ company: company.name, status: 'error', error: err.message });
         }
-    });
-
-    await Promise.all(workers);
+    }
 
     // Close browser after all scraping is done
     if (sharedBrowser) {
@@ -577,6 +571,7 @@ const scrapeAllCompanies = async (query = {}) => {
         sharedBrowser = null;
     }
 
+    logger.info(`Scraping complete: ${results.length}/${companies.length} companies processed`);
     return results;
 };
 

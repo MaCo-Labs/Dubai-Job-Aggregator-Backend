@@ -140,9 +140,13 @@ exports.scrapeAll = async (req, res, next) => {
             ? {}
             : { scrapeStatus: { $in: ['pending', 'failed', 'scraping'] } };
 
+        // 3. Get the actual list of companies to scrape
+        const companiesToScrape = await Company.find(toScrapeQuery);
+
         res.json({
-            message: `Scraping workflow started. ${needsDiscovery.length} companies need discovery first.`,
+            message: `Scraping workflow started for ${companiesToScrape.length} companies. ${needsDiscovery.length} need discovery first.`,
             status: 'started',
+            scrapeCount: companiesToScrape.length,
             discoveryCount: needsDiscovery.length,
             forceMode: force === 'true'
         });
@@ -165,8 +169,8 @@ exports.scrapeAll = async (req, res, next) => {
                     });
                 }
 
-                // Step C: Run scraping for the target set
-                logger.info(`Starting smart scraping for ${targetIds.length} companies...`);
+                // Step C: Run scraping one by one
+                logger.info(`Starting sequential scraping for ${companiesToScrape.length} companies...`);
                 await scrapeAllCompanies(toScrapeQuery);
             } catch (err) {
                 logger.error(`Background scrape workflow error: ${err.message}`);
