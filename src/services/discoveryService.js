@@ -250,4 +250,4 @@ const discoverAllCompanies = async (query = null) => {
     return results;
 };
 
-module.exports = { discoverCompanyUrls, discoverAllCompanies };
+module.exports = { discoverCompanyUrls, discoverAllCompanies, guessWebsiteUrl };

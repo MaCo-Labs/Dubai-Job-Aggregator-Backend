@@ -4,7 +4,7 @@ const logger = require('../config/logger');
 const { generateHash } = require('../utils/hashGenerator');
 const Job = require('../models/Job');
 const Company = require('../models/Company');
-const { discoverCompanyUrls } = require('./discoveryService');
+const { guessWebsiteUrl } = require('./discoveryService');
 
 let sharedBrowser = null;
 const puppeteer = require('puppeteer');
@@ -446,15 +446,14 @@ const scrapeCompany = async (company) => {
         // Update status to scraping
         await Company.findByIdAndUpdate(company._id, { scrapeStatus: 'scraping' });
 
-        // Step 1: Discover URLs if missing
-        if (!company.websiteUrl && !company.linkedinUrl) {
-            logger.info(`${company.name}: No URLs found, running discovery...`);
-            const discovered = await discoverCompanyUrls(company);
-            if (discovered.websiteUrl) {
-                company.websiteUrl = discovered.websiteUrl;
-            }
-            if (discovered.linkedinUrl) {
-                company.linkedinUrl = discovered.linkedinUrl;
+        // Step 1: Try to guess website URL if missing (no ChatGPT — fast)
+        if (!company.websiteUrl) {
+            logger.info(`${company.name}: No website URL, trying URL guessing...`);
+            const guessedUrl = await guessWebsiteUrl(company.name);
+            if (guessedUrl) {
+                company.websiteUrl = guessedUrl;
+                await Company.findByIdAndUpdate(company._id, { websiteUrl: guessedUrl });
+                logger.info(`${company.name}: Guessed URL → ${guessedUrl}`);
             }
         }
 

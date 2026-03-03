@@ -38,6 +38,7 @@ router.post('/discover/:companyId', controller.discoverOne);
 // Scraping routes
 router.post('/scrape', controller.scrapeAll);
 router.post('/scrape/:companyId', controller.scrapeOne);
+router.post('/scrape-ai', controller.scrapeWithAI);
 
 // Data routes
 router.get('/jobs', controller.getJobs);

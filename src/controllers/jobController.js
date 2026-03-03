@@ -126,50 +126,28 @@ exports.discoverOne = async (req, res, next) => {
 exports.scrapeAll = async (req, res, next) => {
     try {
         const { force = false } = req.query;
-        const companies = await Company.find({});
 
-        if (companies.length === 0) {
-            return res.status(400).json({ error: 'No companies found. Upload an XLSX file first.' });
-        }
-
-        // 1. Find companies that need discovery
-        const needsDiscovery = companies.filter(c => !c.websiteUrl && !c.linkedinUrl);
-
-        // 2. Determine which companies to scrape
+        // Determine which companies to scrape
         const toScrapeQuery = force === 'true'
             ? {}
             : { scrapeStatus: { $in: ['pending', 'failed', 'scraping'] } };
 
-        // 3. Get the actual list of companies to scrape
         const companiesToScrape = await Company.find(toScrapeQuery);
 
+        if (companiesToScrape.length === 0) {
+            return res.status(400).json({ error: 'No companies to scrape. Upload an XLSX file or use force=true.' });
+        }
+
         res.json({
-            message: `Scraping workflow started for ${companiesToScrape.length} companies. ${needsDiscovery.length} need discovery first.`,
+            message: `Scraping started for ${companiesToScrape.length} companies (one by one). Discovery will happen inline per company.`,
             status: 'started',
             scrapeCount: companiesToScrape.length,
-            discoveryCount: needsDiscovery.length,
             forceMode: force === 'true'
         });
 
-        // Run workflow in background
+        // Run scraping in background — scrapeCompany already handles discovery inline
         (async () => {
             try {
-                // Step A: Mark target companies as 'scraping' immediately for UI feedback
-                const targetIds = companiesToScrape.map(c => c._id);
-                await Company.updateMany(
-                    { _id: { $in: targetIds } },
-                    { scrapeStatus: 'scraping' }
-                );
-
-                // Step B: Discovery for those missing URLs
-                if (needsDiscovery.length > 0) {
-                    logger.info(`Starting auto-discovery for ${needsDiscovery.length} companies before scraping`);
-                    await discoverAllCompanies({
-                        _id: { $in: needsDiscovery.map(c => c._id) }
-                    });
-                }
-
-                // Step C: Run scraping one by one
                 logger.info(`Starting sequential scraping for ${companiesToScrape.length} companies...`);
                 await scrapeAllCompanies(toScrapeQuery);
             } catch (err) {
@@ -194,6 +172,63 @@ exports.scrapeOne = async (req, res, next) => {
         scrapeCompany(company).catch((err) => {
             logger.error(`Scrape error for ${company.name}: ${err.message}`);
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Phase 2: AI-powered scraping for companies with no jobs found
+// Uses ChatGPT to discover URLs, then re-scrapes
+exports.scrapeWithAI = async (req, res, next) => {
+    try {
+        const companies = await Company.find({
+            scrapeStatus: { $in: ['no_jobs_found', 'failed'] },
+            $or: [
+                { websiteUrl: { $in: [null, ''] } },
+                { careerPageUrl: { $in: [null, ''] } },
+            ]
+        });
+
+        if (companies.length === 0) {
+            return res.json({
+                message: 'No companies need AI discovery. All companies either have jobs or already have URLs.',
+                status: 'complete',
+                count: 0
+            });
+        }
+
+        res.json({
+            message: `AI-powered scraping started for ${companies.length} companies (using ChatGPT to discover URLs)`,
+            status: 'started',
+            count: companies.length
+        });
+
+        // Run in background: discover with AI then re-scrape
+        (async () => {
+            try {
+                for (let i = 0; i < companies.length; i++) {
+                    const company = companies[i];
+                    logger.info(`[AI Phase ${i + 1}/${companies.length}] Discovering & scraping: ${company.name}`);
+
+                    try {
+                        // Step 1: AI Discovery
+                        const discovered = await discoverCompanyUrls(company);
+
+                        // Step 2: Re-scrape if we found a URL
+                        if (discovered.websiteUrl || company.websiteUrl) {
+                            // Reload company with updated URLs
+                            const updatedCompany = await Company.findById(company._id);
+                            await scrapeCompany(updatedCompany);
+                        }
+                    } catch (err) {
+                        logger.error(`AI scrape error for ${company.name}: ${err.message}`);
+                    }
+                }
+                logger.info(`AI-powered scraping complete for ${companies.length} companies`);
+            } catch (err) {
+                logger.error(`Background AI scrape error: ${err.message}`);
+            }
+        })();
     } catch (error) {
         next(error);
     }
